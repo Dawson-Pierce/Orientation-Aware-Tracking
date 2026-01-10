@@ -1,4 +1,4 @@
-# Probabilistic Information Extraction from Radar, CMOS, and Electro-optical Data (PIERCED)
+# Orientation-Aware Tracking using Extended RFS
 ----------------------------------------
 
 Applications of RFS-based algorithms for tracking aerial vehicles. 

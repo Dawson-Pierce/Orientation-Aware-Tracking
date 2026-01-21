@@ -6,6 +6,12 @@ clear; clc; close all
 
 addpath('../../brew/')
 
+pngDir = 'png_folder/';
+
+if ~exist(pngDir,"dir")
+    mkdir(pngDir);
+end
+
 %% Import STL for TR obj
 
 TRsingle = stlread("drone_shape.stl");
@@ -80,10 +86,15 @@ end
 
 % initialize filter(s)
 H = [eye(3) zeros(3, 3)];
-R = 0.2 * eye(3); % Measurement noise
-process_noise = 0.01 * eye(6); 
-inner_filter = BREW.filters.TrajectoryGGIWEKF('dyn_obj',target_motion, ...
-    'H',H,'process_noise',process_noise,'measurement_noise', R, 'L',20);
+R = 0.01 * eye(3); % Measurement noise
+process_noise = 1 * eye(6); 
+% inner_filter = BREW.filters.TrajectoryGGIWEKF('dyn_obj',target_motion, ...
+%     'H',H,'process_noise',process_noise,'measurement_noise', R, 'L',20);
+
+inner_filter = BREW.filters.GGIWEKF('dyn_obj',target_motion, ...
+    'H',H,'process_noise',process_noise,'measurement_noise', R);
+
+
 
 alpha = {10};
 beta = {1}; 
@@ -93,8 +104,17 @@ IWdof = {10};
 IWshape = {[1 0 0; 0 1 0; 0 0 1]}; 
 weight = [1];
 
-birth_model = BREW.distributions.TrajectoryGGIWMixture( ...
-    'idx', {1}, ...
+% birth_model = BREW.distributions.TrajectoryGGIWMixture( ...
+%     'idx', {1}, ...
+%     'alphas', alpha, ...
+%     'betas', beta, ...
+%     'means', mean, ...
+%     'covariances', covariance, ...
+%     'IWdofs', IWdof, ...
+%     'IWshapes', IWshape, ...
+%     'weights', weight);
+
+birth_model = BREW.distributions.GGIWMixture( ...
     'alphas', alpha, ...
     'betas', beta, ...
     'means', mean, ...
@@ -110,19 +130,19 @@ birth_model = BREW.distributions.TrajectoryGGIWMixture( ...
 %% Setup sensor_station objs
 
 sensors{1} = sensor_station('location',[0 20 0],'view_vector',[1 0 0],'grid_slope',0.03);
-sensors{2} = sensor_station('location',[20 0 0],'view_vector',[0 1 0],'grid_slope',0.03);
+% sensors{2} = sensor_station('location',[20 0 0],'view_vector',[0 1 0],'grid_slope',0.03);
 
 % Setting up internal trackers this way so we can create copies since the
 % classes for tracking inherit the handle class
 for k = 1:length(sensors)
-    sensors{k}.internal_tracker = BREW.multi_target.PHD( ...
+    sensors{k}.internal_tracker = drone_PHD( ...
         'filter',copy(inner_filter), ...
         'birth_model', copy(birth_model),...
     'prob_detection', 0.8, ...
     'prob_survive', 0.9, ...
     'max_terms',50, ...
     'cluster_obj',BREW.clustering.DBSCAN_obj(3,5), ...
-    'extract_threshold',0.5);
+    'extract_threshold',0.3);
 end
 
 points = cell(length(sensors),length(t)); 
@@ -178,35 +198,65 @@ elseif plot == 1
         end
         subplot(1,2,1)
         cla 
+        trimmed_meas = cell(num_active);
         for kk = 1:length(sensors)
             points{kk,k} = sensors{kk}.get_points(TR_active,T);
             scatter3(points{kk,k}(:,1),points{kk,k}(:,2),points{kk,k}(:,3),6,'*'); hold on
-            sensors{kk}.plot()
+            % sensors{kk}.plot()
             
-            sensors{kk}.internal_tracker.predict(dt,{});
-            sensors{kk}.internal_tracker.correct(dt,points{kk,k}');
+            sensors{kk}.internal_tracker.predict(dt);
+            [sensors{kk}.internal_tracker, trimmed_meas{kk}] = sensors{kk}.internal_tracker.correct(dt,points{kk,k}','basis_tracking',true);
             
             est_mix{kk} = sensors{kk}.internal_tracker.cleanup();
+
+            for ii = 1:length(est_mix{kk})
+                % temp_shape_mat = est_mix{kk}.distributions{ii}.IWshapes(:,:,end);
+                % [B,D,Bp] = eig(temp_shape_mat);
+                % p = est_mix{kk}.distributions{ii}.mean_history(1:3,end);
+                % 
+                % B(:,diag(D)<0)=-B(:,diag(D)<0);
+                % D = abs(D);
+                % 
+                % [val,idx] = sort(diag(D));
+
+                % B = B(:,idx);
+
+                p = est_mix{kk}.distributions{ii}.mean(1:3);
+
+                B = est_mix{kk}.distributions{ii}.basis;
+
+                scale = 5;
+
+                plot3([p(1) p(1)+scale*B(1,1)], [p(2) p(2)+scale*B(2,1)], [p(3) p(3)+scale*B(3,1)], 'r', 'LineWidth', 2);
+                plot3([p(1) p(1)+scale*B(1,2)], [p(2) p(2)+scale*B(2,2)], [p(3) p(3)+scale*B(3,2)], 'g', 'LineWidth', 2);
+                plot3([p(1) p(1)+scale*B(1,3)], [p(2) p(2)+scale*B(2,3)], [p(3) p(3)+scale*B(3,3)], 'b', 'LineWidth', 2);
+
+            end
             
-            est_mix{kk}.plot_distributions([1,2,3],'Color',est_colors{kk},'window_color','r','window_width',1.6);
+            est_mix{kk}.plot_distributions([1,2,3],'Color','r','LineWidth',2); hold off
         end
     
-        xlim([0 30])
-        ylim([0 30])
-        zlim([-6 12])
-    
+        scale_for_plots = 0.9;
+
+        xlim(scale_for_plots*[0 30])
+        ylim(scale_for_plots*[0 30])
+        zlim(scale_for_plots*[-15 15]) 
+
         subplot(1,2,2)
         cla 
         for kk = 1:length(sensors)
-            points{kk,k} = sensors{kk}.get_points(TR_active,T);
-            scatter3(points{kk,k}(:,1),points{kk,k}(:,2),points{kk,k}(:,3),6,'*'); hold on
-            sensors{kk}.plot()
+            % points{kk,k} = sensors{kk}.get_points(TR_active,T);
+            curr_points = trimmed_meas{kk};
+            for ii = 1:length(curr_points)
+                scatter3(curr_points{ii}(1,:),curr_points{ii}(2,:),curr_points{ii}(3,:),6,'*'); hold on
+            end
+            % sensors{kk}.plot()
         end
     
-        xlim([0 30])
-        ylim([0 30])
-        zlim([-6 12])
-        
+        xlim(scale_for_plots*[0 30])
+        ylim(scale_for_plots*[0 30])
+        zlim(scale_for_plots*[-15 15]) 
+
         drawnow;
         
         frame = getframe(f);
@@ -225,18 +275,22 @@ elseif plot == 1
                     'WriteMode', 'append', ...
                     'DelayTime', 0.1);
         end
+
+        saveas(gcf,[pngDir, sprintf('frame_%i',k),'.png'])
     
     end
 end
 
 %%
 
-figure;
-for kk = 1:length(sensors) 
-    scatter3(points{kk,1}(:,1),points{kk,1}(:,2),points{kk,1}(:,3),6,'*'); hold on
-    scatter3(points{kk,50}(:,1),points{kk,50}(:,2),points{kk,50}(:,3),6,'*'); hold on
-    sensors{kk}.plot()
-end
+% figure;
+% for kk = 1:length(sensors) 
+%     scatter3(points{kk,1}(:,1),points{kk,1}(:,2),points{kk,1}(:,3),6,'*'); hold on
+%     scatter3(points{kk,50}(:,1),points{kk,50}(:,2),points{kk,50}(:,3),6,'*'); hold on
+%     sensors{kk}.plot()
+% end
+
+%% Functions
 
 function path = makeCirclePath(c, r, w)
     path.p = @(t) [c(1)+r*cos(w*t); c(2)+r*sin(w*t); c(3)];
